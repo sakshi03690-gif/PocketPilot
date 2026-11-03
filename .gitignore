@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+PocketPilot.ipynb
+
+# Secrets and local configuration
+.streamlit/secrets.toml
+.env
+.env.*
+
+# Local data
+*.csv
+*.xlsx
+
+# Operating system
+.DS_Store
+
+# Old project backups
+app_backup.py
+backupapp.py
