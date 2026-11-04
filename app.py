@@ -105,13 +105,8 @@ st.markdown(
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("## 🚀 PocketPilot")
+    st.markdown("## 🪙 PocketPilot")
     st.caption("PLAN  •  TRACK  •  THRIVE")
-    st.markdown(
-        "<div class='pp-theme-label'>APPEARANCE</div>"
-        "<div class='pp-dark-mode-pill'><span class='pp-moon'>☾</span> DARK MODE</div>",
-        unsafe_allow_html=True,
-    )
     st.markdown("---")
     st.markdown("### Your workspace")
     page = st.radio(
@@ -229,7 +224,7 @@ st.sidebar.markdown("### Choose analysis period")
 period_choice = st.sidebar.selectbox(
     "Show transactions for",
     ["Month to date", "Today", "Full month", "Last 30 days", "All transactions", "Custom date range"],
-    index=0,
+    index=4,
 )
 
 selected_month = default_month
