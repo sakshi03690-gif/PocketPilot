@@ -105,7 +105,7 @@ st.markdown(
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("##  PocketPilot")
+    st.markdown("## 📊PocketPilot")
     st.caption("PLAN  •  TRACK  •  THRIVE")
     st.markdown("---")
     st.markdown("### Your workspace")
@@ -204,6 +204,37 @@ if upload_error:
     st.sidebar.caption("Showing sample transactions until the CSV is corrected.")
     df = sample_df.copy()
 
+# Manual transactions remain available during the current app session.
+if "manual_transactions" not in st.session_state:
+    st.session_state.manual_transactions = []
+
+with st.sidebar.expander("➕ Add a transaction manually", expanded=False):
+    with st.form("manual_transaction_form", clear_on_submit=True):
+        manual_type = st.selectbox("Transaction type", ["Expense", "Income"])
+        manual_amount = st.number_input("Amount (₹)", min_value=1, step=50, value=500)
+        manual_date = st.date_input("Transaction date", value=today)
+        manual_description = st.text_input("Description", placeholder="e.g. Salary, groceries")
+        manual_category = st.selectbox(
+            "Category",
+            ["Food & groceries", "Housing", "Transport", "Education", "Bills & utilities",
+             "Healthcare", "Eating out", "Entertainment", "Shopping", "Freelance", "Salary", "Other"],
+        )
+        manual_notes = st.text_input("Notes (optional)")
+        if st.form_submit_button("Add transaction", type="primary"):
+            if manual_description.strip():
+                st.session_state.manual_transactions.append({
+                    "date": pd.Timestamp(manual_date),
+                    "description": manual_description.strip(),
+                    "type": manual_type,
+                    "amount": float(manual_amount),
+                    "category": manual_category,
+                    "notes": manual_notes.strip(),
+                })
+                st.sidebar.success(f"{manual_type} of ₹{manual_amount:,.0f} added.")
+                st.rerun()
+            else:
+                st.sidebar.error("Please enter a description.")
+
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0).clip(lower=0)
 df["type"] = df["type"].astype(str).str.strip().str.title()
@@ -212,6 +243,10 @@ df["description"] = df["description"].fillna("Transaction").astype(str)
 df["notes"] = df["notes"].fillna("").astype(str)
 df = df.dropna(subset=["date"])
 df = df[df["type"].isin(["Income", "Expense"])].copy()
+if st.session_state.manual_transactions:
+    manual_df = pd.DataFrame(st.session_state.manual_transactions)
+    manual_df["date"] = pd.to_datetime(manual_df["date"], errors="coerce")
+    df = pd.concat([df, manual_df[["date", "description", "type", "amount", "category", "notes"]]], ignore_index=True)
 df = df.sort_values("date")
 
 # ---------- Flexible analysis period ----------
@@ -292,6 +327,7 @@ current_month_expenses = float(
 )
 current_month_balance = current_month_income - current_month_expenses
 budget_left = float(monthly_budget - current_month_expenses)
+budget_used_pct = (current_month_expenses / monthly_budget * 100) if monthly_budget > 0 else 0.0
 
 days_in_month = calendar.monthrange(today.year, today.month)[1]
 elapsed_days = max(1, min(today.day, days_in_month))
@@ -354,12 +390,16 @@ if page == "Overview":
             delta_color="inverse" if budget_left < 0 else "normal",
         )
 
-    if budget_left < 0:
-        st.warning(f"⚠️ This month's spending is {rupees(abs(budget_left))} over your entered monthly budget. Review the forecast and category breakdown below.")
-    elif monthly_budget > 0 and current_month_expenses / monthly_budget >= 0.80:
-        st.info("👀 You have used at least 80% of this month's budget. Keep an eye on the rest of the month.")
+    if monthly_budget <= 0:
+        st.info("Set a monthly spending budget to see your budget usage.")
+    elif budget_used_pct > 100:
+        st.warning(f"⚠️ You've used {budget_used_pct:.0f}% of your monthly budget and are {rupees(abs(budget_left))} over budget. Review your spending.")
+    elif budget_used_pct >= 80:
+        st.warning(f"👀 You've used {budget_used_pct:.0f}% of your monthly budget. Keep an eye on the remaining amount.")
+    elif budget_used_pct >= 50:
+        st.info(f"📊 You've used {budget_used_pct:.0f}% of your monthly budget. Keep tracking your spending.")
     else:
-        st.success("🌱 Every transaction helps you build a clearer picture of your money.")
+        st.success(f"🌱 You've used {budget_used_pct:.0f}% of your monthly budget. Every transaction helps build a clearer picture.")
 
     st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
     left, right = st.columns([1.35, 1], gap="large")
@@ -710,16 +750,29 @@ elif page == "Forecast & goals":
         empty_state("No recurring bills added yet.")
 
 elif page == "Transactions":
-    section_heading("YOUR MONEY LOG", "Transaction history", "Search, filter, and inspect the transactions used in your dashboard.")
+    section_heading("YOUR MONEY LOG", "Transaction history", "Search, filter, and inspect the transactions in your selected analysis period.")
     search_term = st.text_input("Search description or category", placeholder="e.g. groceries, transport...")
     type_filter = st.multiselect("Transaction type", ["Income", "Expense"], default=["Income", "Expense"])
-    category_options = sorted(df["category"].dropna().unique().tolist())
-    category_filter = st.multiselect("Categories", category_options, default=category_options)
-    date_min = df["date"].min().date() if not df.empty else today
-    date_max = df["date"].max().date() if not df.empty else today
-    date_range = st.date_input("Date range", value=(date_min, date_max), min_value=date_min, max_value=date_max)
 
-    filtered = df.copy()
+    # The transaction table must follow the same period selected in the sidebar.
+    # For Full month, month_df contains every transaction in that selected month.
+    period_transactions = month_df.copy()
+    category_options = sorted(period_transactions["category"].dropna().unique().tolist())
+    category_filter = st.multiselect("Categories", category_options, default=category_options)
+
+    if not period_transactions.empty:
+        date_min = period_transactions["date"].min().date()
+        date_max = period_transactions["date"].max().date()
+        date_range = st.date_input(
+            "Date range",
+            value=(date_min, date_max),
+            min_value=date_min,
+            max_value=date_max,
+        )
+    else:
+        date_range = None
+
+    filtered = period_transactions.copy()
     filtered = filtered[filtered["type"].isin(type_filter)]
     filtered = filtered[filtered["category"].isin(category_filter)]
     if search_term.strip():
@@ -738,14 +791,13 @@ elif page == "Transactions":
     shown = shown[["date", "description", "type", "category", "amount", "notes"]]
     shown.columns = ["Date", "Description", "Type", "Category", "Amount", "Notes"]
     st.dataframe(shown, use_container_width=True, hide_index=True)
-    st.caption(f"Showing {len(filtered)} of {len(df)} transactions.")
+    st.caption(f"Showing {len(filtered)} of {len(period_transactions)} transactions in the selected analysis period.")
     csv_bytes = filtered.to_csv(index=False).encode("utf-8")
     st.download_button("Download filtered transactions as CSV", data=csv_bytes, file_name="pocketpilot_transactions.csv", mime="text/csv")
 
 # ---------- Footer ----------
 st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
 st.caption(
-    "PocketPilot is an educational prototype, not financial advice. "
     "Forecasts are simple estimates based on the transactions provided and may be inaccurate. "
     "No bank or UPI integration is used."
 )
