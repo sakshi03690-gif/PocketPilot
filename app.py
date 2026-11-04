@@ -105,7 +105,7 @@ st.markdown(
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("## 🪙 PocketPilot")
+    st.markdown("##  PocketPilot")
     st.caption("PLAN  •  TRACK  •  THRIVE")
     st.markdown("---")
     st.markdown("### Your workspace")
@@ -125,7 +125,7 @@ with st.sidebar:
     city = st.selectbox(
         "City for cost-of-living context",
         ["Delhi", "Mumbai", "Bengaluru", "Hyderabad", "Pune", "Chandigarh", "Karnal", "Other"],
-        index=6,
+        index=2,
     )
     st.markdown("---")
     st.caption("🔒 Privacy-first by design")
@@ -142,7 +142,7 @@ sample_rows = [
     (month_start + timedelta(days=3), "Metro / bus", "Expense", 240, "Transport", "Variable"),
     (month_start + timedelta(days=4), "Coffee with friends", "Expense", 180, "Eating out", "Lifestyle"),
     (month_start + timedelta(days=5), "Mobile recharge", "Expense", 299, "Bills & utilities", "Fixed"),
-    (month_start + timedelta(days=6), "Online course", "Expense", 499, "Education", "Growth"),
+    (month_start + timedelta(days=6), "Online course", "Expense", 4099, "Education", "Growth"),
     (month_start + timedelta(days=7), "Groceries", "Expense", 430, "Food & groceries", "Variable"),
     (month_start + timedelta(days=8), "Cab", "Expense", 210, "Transport", "Variable"),
     (month_start + timedelta(days=9), "Lunch", "Expense", 160, "Eating out", "Lifestyle"),
@@ -275,22 +275,30 @@ else:
     month_df = df[(df["date"].dt.date >= period_start) & (df["date"].dt.date <= period_end)].copy()
 all_month_df = df.copy()
 
+# Overall totals follow the selected analysis period (including All transactions).
 income = float(month_df.loc[month_df["type"] == "Income", "amount"].sum())
 expenses = float(month_df.loc[month_df["type"] == "Expense", "amount"].sum())
 balance = income - expenses
-budget_left = float(monthly_budget - expenses)
 
-# Forecast only when the selected data represents the current month.
-is_current_month_view = (
-    period_choice in ["Month to date", "Full month"]
-    and month_period == pd.Period(today, freq="M")
+# Monthly budget and forecast always use the current calendar month's transactions,
+# independent of the selected analysis filter above.
+current_month_period = pd.Period(today, freq="M")
+current_month_df = df[df["date"].dt.to_period("M") == current_month_period].copy()
+current_month_income = float(
+    current_month_df.loc[current_month_df["type"] == "Income", "amount"].sum()
 )
-days_in_month = calendar.monthrange(month_period.year, month_period.month)[1]
-elapsed_days = max(1, min(today.day, days_in_month)) if is_current_month_view else days_in_month
-days_left = max(0, days_in_month - elapsed_days) if is_current_month_view else 0
-daily_expense_rate = expenses / elapsed_days if elapsed_days else 0
-forecast_expenses = expenses + daily_expense_rate * days_left
-forecast_balance = income - forecast_expenses
+current_month_expenses = float(
+    current_month_df.loc[current_month_df["type"] == "Expense", "amount"].sum()
+)
+current_month_balance = current_month_income - current_month_expenses
+budget_left = float(monthly_budget - current_month_expenses)
+
+days_in_month = calendar.monthrange(today.year, today.month)[1]
+elapsed_days = max(1, min(today.day, days_in_month))
+days_left = max(0, days_in_month - elapsed_days)
+daily_expense_rate = current_month_expenses / elapsed_days
+forecast_expenses = current_month_expenses + daily_expense_rate * days_left
+forecast_balance = current_month_income - forecast_expenses
 forecast_budget_overrun = forecast_expenses - monthly_budget
 
 # ---------- Helper functions ----------
@@ -329,7 +337,7 @@ if page == "Overview":
     section_heading(
         "YOUR MONEY AT A GLANCE",
         "Your financial snapshot",
-        f"Showing {period_choice.lower()} · {period_start.strftime('%d %b %Y')} to {period_end.strftime('%d %b %Y')}.",
+        f"Income, expenses and balance: {period_choice.lower()} · {period_start.strftime('%d %b %Y')} to {period_end.strftime('%d %b %Y')}. Budget and forecast: current calendar month.",
     )
     m1, m2, m3, m4 = st.columns(4, gap="medium")
     with m1:
@@ -340,16 +348,16 @@ if page == "Overview":
         st.metric("NET BALANCE", rupees(balance), "Income minus expenses")
     with m4:
         st.metric(
-            "BUDGET REMAINING",
+            "THIS MONTH'S BUDGET LEFT",
             rupees(budget_left),
             "Over budget" if budget_left < 0 else "Within budget",
             delta_color="inverse" if budget_left < 0 else "normal",
         )
 
-    if period_choice in ["Month to date", "Full month"] and budget_left < 0:
-        st.warning(f"⚠️ You are {rupees(abs(budget_left))} over your entered budget. Review the forecast and category breakdown below.")
-    elif period_choice in ["Month to date", "Full month"] and monthly_budget > 0 and expenses / monthly_budget >= 0.80:
-        st.info("👀 You have used at least 80% of your entered budget. Keep an eye on the rest of the month.")
+    if budget_left < 0:
+        st.warning(f"⚠️ This month's spending is {rupees(abs(budget_left))} over your entered monthly budget. Review the forecast and category breakdown below.")
+    elif monthly_budget > 0 and current_month_expenses / monthly_budget >= 0.80:
+        st.info("👀 You have used at least 80% of this month's budget. Keep an eye on the rest of the month.")
     else:
         st.success("🌱 Every transaction helps you build a clearer picture of your money.")
 
@@ -397,13 +405,13 @@ if page == "Overview":
                 "Share": st.column_config.TextColumn("Share of spending", width="small"),
             })
     with right:
-        section_heading("MONTH-END OUTLOOK", "A simple forecast", "A baseline estimate using your average daily spending.")
+        section_heading("MONTH-END OUTLOOK", "A simple forecast", "Current-month estimate using your average daily spending, regardless of the analysis filter.")
         st.markdown(
             f"""
             <div class="pp-card">
                 <div class="pp-card-label">PROJECTED MONTH-END EXPENSES</div>
                 <div class="pp-card-value">{rupees(forecast_expenses)}</div>
-                <div class="pp-card-note">Based on {rupees(daily_expense_rate)} average spending per day.</div>
+                <div class="pp-card-note">Based on {rupees(daily_expense_rate)} average spending per day this month.</div>
                 <div style="height:14px"></div>
                 <div class="pp-card-label">PROJECTED BUDGET POSITION</div>
                 <div class="pp-card-value" style="color:{'#B85C50' if forecast_budget_overrun > 0 else '#9B7BFF'}">
@@ -425,8 +433,8 @@ if page == "Overview":
     section_heading("NEXT BEST ACTION", "Small steps that can help", "Practical suggestions based on the transactions shown.")
     suggestions = []
     expense_df = month_df[month_df["type"] == "Expense"]
-    if monthly_budget > 0 and expenses / monthly_budget >= 0.8:
-        suggestions.append(("Watch your pace", "You've used at least 80% of your budget. Pause non-essential purchases until you review the remaining days."))
+    if monthly_budget > 0 and current_month_expenses / monthly_budget >= 0.8:
+        suggestions.append(("Watch your pace", "You've used at least 80% of this month's budget. Pause non-essential purchases until you review the remaining days."))
     if not expense_df.empty:
         top_category = expense_df.groupby("category")["amount"].sum().sort_values(ascending=False)
         if len(top_category):
@@ -503,6 +511,8 @@ elif page == "Monthly comparison":
         if col not in monthly.columns:
             monthly[col] = 0.0
     monthly["Net balance"] = monthly["Income"] - monthly["Expense"]
+    monthly["Monthly budget"] = float(monthly_budget)
+    monthly["Budget remaining"] = monthly["Monthly budget"] - monthly["Expense"]
     monthly = monthly.sort_values("month")
 
     if monthly.empty:
@@ -529,7 +539,7 @@ elif page == "Monthly comparison":
         st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
         compare_metric = st.selectbox(
             "Choose what to compare",
-            ["Income", "Expense", "Net balance"],
+            ["Income", "Expense", "Net balance", "Budget remaining"],
             index=1,
             key="monthly_compare_metric",
         )
@@ -540,6 +550,14 @@ elif page == "Monthly comparison":
             title=f"Month-wise {compare_metric.lower()}",
             text_auto=".2s",
         )
+        if compare_metric == "Expense":
+            fig.add_hline(
+                y=float(monthly_budget),
+                line_dash="dash",
+                line_color="#45DDF2",
+                annotation_text=f"Monthly budget · {rupees(monthly_budget)}",
+                annotation_position="top left",
+            )
         fig.update_layout(
             height=390, margin=dict(l=10, r=10, t=55, b=10),
             xaxis_title="Month", yaxis_title="Amount (₹)",
@@ -563,10 +581,10 @@ elif page == "Monthly comparison":
 
         st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
         section_heading("MONTH-BY-MONTH NUMBERS", "Detailed comparison", "Use the table to compare totals and spot changes between months.")
-        table = monthly[["Month label", "Income", "Expense", "Net balance"]].copy()
+        table = monthly[["Month label", "Income", "Expense", "Net balance", "Monthly budget", "Budget remaining"]].copy()
         table["Change in expenses"] = table["Expense"].diff()
         table["Change in expenses (%)"] = table["Expense"].pct_change() * 100
-        for col in ["Income", "Expense", "Net balance", "Change in expenses"]:
+        for col in ["Income", "Expense", "Net balance", "Monthly budget", "Budget remaining", "Change in expenses"]:
             table[col] = table[col].map(rupees)
         table["Change in expenses (%)"] = table["Change in expenses (%)"].map(
             lambda value: "—" if pd.isna(value) else f"{value:+.1f}%"
@@ -605,7 +623,7 @@ elif page == "Forecast & goals":
     section_heading("PLAN AHEAD", "Forecast & savings goals", "A lightweight forecast plus a goal tracker to help you plan.")
     f1, f2, f3 = st.columns(3, gap="medium")
     with f1:
-        st.metric("SPENT SO FAR", rupees(expenses))
+        st.metric("SPENT SO FAR", rupees(current_month_expenses), "Current calendar month")
     with f2:
         st.metric("PROJECTED MONTH-END SPEND", rupees(forecast_expenses), "Rule-based estimate")
     with f3:
@@ -653,7 +671,7 @@ elif page == "Forecast & goals":
     st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
     section_heading("BUDGET SCENARIOS", "What if you cut spending?", "Illustrative scenarios based on recorded expenses so far.")
     scenario_cut = st.slider("Potential reduction in remaining flexible spending", min_value=0, max_value=40, value=10, step=5)
-    projected_saving = max(0, forecast_expenses - expenses) * scenario_cut / 100
+    projected_saving = max(0, forecast_expenses - current_month_expenses) * scenario_cut / 100
     adjusted_forecast = forecast_expenses - projected_saving
     s1, s2 = st.columns(2, gap="medium")
     with s1:
