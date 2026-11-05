@@ -24,3 +24,6 @@ PocketPilot.ipynb
 # Old project backups
 app_backup.py
 backupapp.py
+googleapi.txt
+appBackup.py
+.streamlit/secrets.toml

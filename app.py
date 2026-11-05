@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import calendar
+import time
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from google import genai
 
 # Consistent chart palette for the futuristic PocketPilot identity.
 px.defaults.color_discrete_sequence = ["#9B72FF", "#45DDF2", "#35D6A0", "#FF9A62", "#668BFF", "#D47CFF"]
@@ -105,7 +107,7 @@ st.markdown(
 
 # ---------- Sidebar ----------
 with st.sidebar:
-    st.markdown("## 📊PocketPilot")
+    st.markdown("## PocketPilot")
     st.caption("PLAN  •  TRACK  •  THRIVE")
     st.markdown("---")
     st.markdown("### Your workspace")
@@ -352,6 +354,73 @@ def section_heading(kicker: str, title: str, subtitle: str = "") -> None:
 def empty_state(message: str) -> None:
     st.info(message)
 
+
+def generate_gemini_insights(summary: str) -> str:
+    """Generate concise financial-wellness guidance from aggregated figures only."""
+    try:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    except Exception as exc:
+        raise RuntimeError(
+            "Gemini API key is missing. Add GEMINI_API_KEY to .streamlit/secrets.toml."
+        ) from exc
+
+    if not str(api_key).strip():
+        raise RuntimeError("GEMINI_API_KEY is empty. Add a valid key to Streamlit secrets.")
+
+    client = genai.Client(api_key=api_key)
+    prompt = f"""You are PocketPilot, a practical financial-wellness assistant
+for Indian college students and young professionals.
+
+Use only the aggregated figures below. Give exactly 3 personalized,
+practical recommendations. For each, include a short heading, explain
+which supplied figure supports the insight, and give one realistic action.
+Be concise, supportive, and specific. Use Indian rupees (₹).
+Do not invent missing information. Do not recommend investments,
+financial products, loans, or risky ways to make money. This is educational
+guidance, not professional financial advice.
+
+Aggregated financial summary:
+{summary}
+"""
+
+    # A 503 is usually temporary server-side model overload, not a bad API key.
+    # Retry transient server/rate-limit errors twice with exponential backoff.
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=prompt,
+            )
+            break
+        except Exception as exc:
+            status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+            try:
+                status_code = int(status_code)
+            except (TypeError, ValueError):
+                status_code = None
+            error_text = str(exc).upper()
+            transient_error = (
+                status_code in {408, 429, 500, 502, 503, 504}
+                or any(token in error_text for token in ("503 UNAVAILABLE", "429 RESOURCE_EXHAUSTED", "500 INTERNAL", "502 BAD GATEWAY", "504 DEADLINE_EXCEEDED"))
+            )
+            if not transient_error:
+                raise
+            if attempt == 2:
+                if status_code == 503 or "503 UNAVAILABLE" in error_text:
+                    raise RuntimeError(
+                        "Gemini is temporarily overloaded (503). PocketPilot retried the request, "
+                        "but the model is still busy. Please wait a little and try again. "
+                        "Your API key and transaction data do not need to be changed."
+                    ) from exc
+                raise
+            time.sleep(2 ** (attempt + 1))
+
+    result = getattr(response, "text", None)
+    if not result or not result.strip():
+        raise RuntimeError("Gemini returned an empty response. Please try again.")
+    return result.strip()
+
 # ---------- Hero ----------
 st.markdown(
     """
@@ -490,6 +559,54 @@ if page == "Overview":
     for i, (title, body) in enumerate(suggestions[:3]):
         with cards[i]:
             st.markdown(f'<div class="pp-card"><div class="pp-card-label">ACTION {i+1:02d}</div><div style="font-size:1.08rem;font-weight:800;margin:10px 0;color:{THEME["text"]}">{title}</div><div class="pp-card-note" style="font-size:.9rem;line-height:1.6">{body}</div></div>', unsafe_allow_html=True)
+
+    # ---------- Gemini-powered financial insights ----------
+    st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
+    section_heading(
+        "GEMINI AI",
+        "Your personalized money insights",
+        "AI interprets aggregated spending patterns and suggests practical next steps. No raw transaction descriptions or notes are shared.",
+    )
+
+    current_categories = (
+        current_month_df[current_month_df["type"] == "Expense"]
+        .groupby("category")["amount"]
+        .sum()
+        .sort_values(ascending=False)
+        .head(5)
+    )
+    category_summary = "\n".join(
+        f"- {category}: ₹{amount:,.0f}"
+        for category, amount in current_categories.items()
+    ) or "No expenses recorded yet."
+
+    ai_summary = f"""Current month: {today.strftime('%B %Y')}
+Monthly budget: ₹{monthly_budget:,.0f}
+Monthly income recorded: ₹{current_month_income:,.0f}
+Expenses recorded: ₹{current_month_expenses:,.0f}
+Budget remaining: ₹{budget_left:,.0f}
+Budget used: {budget_used_pct:.1f}%
+Projected month-end expenses: ₹{forecast_expenses:,.0f}
+
+Top spending categories (aggregated):
+{category_summary}
+"""
+
+    if st.button("✨ Generate AI insights", type="primary", key="generate_gemini_insights"):
+        with st.spinner("PocketPilot is reviewing your spending summary..."):
+            try:
+                st.session_state["gemini_insights"] = generate_gemini_insights(ai_summary)
+                st.session_state["gemini_insights_error"] = None
+            except Exception as exc:
+                st.session_state["gemini_insights"] = None
+                st.session_state["gemini_insights_error"] = str(exc)
+
+    if st.session_state.get("gemini_insights_error"):
+        st.error(f"Could not generate AI insights: {st.session_state['gemini_insights_error']}")
+    if st.session_state.get("gemini_insights"):
+        with st.container(border=True):
+            st.markdown(st.session_state["gemini_insights"])
+        st.caption("AI-generated educational guidance. Verify the figures and use your own judgment before making financial decisions.")
 
 elif page == "Spending analysis":
     section_heading("UNDERSTAND THE PATTERN", "Spending analysis", "Explore your expenses by category and over time.")
