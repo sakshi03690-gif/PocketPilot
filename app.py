@@ -8,6 +8,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+from ai_engine import AIEngineError, ask_financial_coach, configured_providers
+
 # Consistent chart palette for the futuristic PocketPilot identity.
 px.defaults.color_discrete_sequence = ["#9B72FF", "#45DDF2", "#35D6A0", "#FF9A62", "#668BFF", "#D47CFF"]
 
@@ -111,7 +113,7 @@ with st.sidebar:
     st.markdown("### Your workspace")
     page = st.radio(
         "Navigate",
-        ["Overview", "Spending analysis", "Monthly comparison", "Forecast & goals", "Transactions"],
+        ["Overview", "Spending analysis", "Monthly comparison", "Forecast & goals", "AI Financial Coach", "Transactions"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -135,22 +137,29 @@ with st.sidebar:
 # ---------- Sample transaction data ----------
 today = date.today()
 month_start = today.replace(day=1)
+
+# Demo transactions are distributed across elapsed days only. This prevents
+# the sample dataset from accidentally containing future-dated purchases.
+def sample_day(offset: int) -> date:
+    elapsed_days_for_sample = max(1, today.day)
+    return month_start + timedelta(days=offset % elapsed_days_for_sample)
+
 sample_rows = [
-    (month_start, "Pocket money", "Income", 12000, "Other", "Monthly allowance"),
-    (month_start + timedelta(days=1), "Hostel / rent", "Expense", 3500, "Housing", "Fixed"),
-    (month_start + timedelta(days=2), "Groceries", "Expense", 650, "Food & groceries", "Variable"),
-    (month_start + timedelta(days=3), "Metro / bus", "Expense", 240, "Transport", "Variable"),
-    (month_start + timedelta(days=4), "Coffee with friends", "Expense", 180, "Eating out", "Lifestyle"),
-    (month_start + timedelta(days=5), "Mobile recharge", "Expense", 299, "Bills & utilities", "Fixed"),
-    (month_start + timedelta(days=6), "Online course", "Expense", 4099, "Education", "Growth"),
-    (month_start + timedelta(days=7), "Groceries", "Expense", 430, "Food & groceries", "Variable"),
-    (month_start + timedelta(days=8), "Cab", "Expense", 210, "Transport", "Variable"),
-    (month_start + timedelta(days=9), "Lunch", "Expense", 160, "Eating out", "Lifestyle"),
-    (month_start + timedelta(days=10), "Freelance task", "Income", 1800, "Freelance", "Extra income"),
-    (month_start + timedelta(days=11), "Stationery", "Expense", 220, "Education", "Study"),
-    (month_start + timedelta(days=12), "Movie", "Expense", 350, "Entertainment", "Lifestyle"),
-    (month_start + timedelta(days=13), "Electricity share", "Expense", 400, "Bills & utilities", "Fixed"),
-    (month_start + timedelta(days=14), "Groceries", "Expense", 520, "Food & groceries", "Variable"),
+    (sample_day(0), "Pocket money", "Income", 12000, "Other", "Monthly allowance"),
+    (sample_day(1), "Hostel / rent", "Expense", 3500, "Housing", "Fixed"),
+    (sample_day(2), "Groceries", "Expense", 650, "Food & groceries", "Variable"),
+    (sample_day(3), "Metro / bus", "Expense", 240, "Transport", "Variable"),
+    (sample_day(4), "Coffee with friends", "Expense", 180, "Eating out", "Lifestyle"),
+    (sample_day(5), "Mobile recharge", "Expense", 299, "Bills & utilities", "Fixed"),
+    (sample_day(6), "Online course", "Expense", 4099, "Education", "Growth"),
+    (sample_day(7), "Groceries", "Expense", 430, "Food & groceries", "Variable"),
+    (sample_day(8), "Cab", "Expense", 210, "Transport", "Variable"),
+    (sample_day(9), "Lunch", "Expense", 160, "Eating out", "Lifestyle"),
+    (sample_day(10), "Freelance task", "Income", 1800, "Freelance", "Extra income"),
+    (sample_day(11), "Stationery", "Expense", 220, "Education", "Study"),
+    (sample_day(12), "Movie", "Expense", 350, "Entertainment", "Lifestyle"),
+    (sample_day(13), "Electricity share", "Expense", 400, "Bills & utilities", "Fixed"),
+    (sample_day(14), "Groceries", "Expense", 520, "Food & groceries", "Variable"),
 ]
 sample_df = pd.DataFrame(
     sample_rows,
@@ -315,27 +324,74 @@ income = float(month_df.loc[month_df["type"] == "Income", "amount"].sum())
 expenses = float(month_df.loc[month_df["type"] == "Expense", "amount"].sum())
 balance = income - expenses
 
-# Monthly budget and forecast always use the current calendar month's transactions,
-# independent of the selected analysis filter above.
+# ---------- Current-month budget and smart forecast ----------
+# This forecast always uses the current calendar month, regardless of
+# the analysis-period filter selected in the sidebar.
 current_month_period = pd.Period(today, freq="M")
-current_month_df = df[df["date"].dt.to_period("M") == current_month_period].copy()
+current_month_df = df[
+    (df["date"].dt.to_period("M") == current_month_period)
+    & (df["date"].dt.date <= today)
+].copy()
+
 current_month_income = float(
-    current_month_df.loc[current_month_df["type"] == "Income", "amount"].sum()
+    current_month_df.loc[
+        current_month_df["type"] == "Income", "amount"
+    ].sum()
 )
 current_month_expenses = float(
-    current_month_df.loc[current_month_df["type"] == "Expense", "amount"].sum()
+    current_month_df.loc[
+        current_month_df["type"] == "Expense", "amount"
+    ].sum()
 )
 current_month_balance = current_month_income - current_month_expenses
-budget_left = float(monthly_budget - current_month_expenses)
-budget_used_pct = (current_month_expenses / monthly_budget * 100) if monthly_budget > 0 else 0.0
 
+# Budget calculations
+budget_left = float(monthly_budget - current_month_expenses)
+budget_used_pct = (
+    current_month_expenses / monthly_budget * 100
+    if monthly_budget > 0 else 0.0
+)
+
+# Calendar days elapsed and remaining in this month
 days_in_month = calendar.monthrange(today.year, today.month)[1]
 elapsed_days = max(1, min(today.day, days_in_month))
 days_left = max(0, days_in_month - elapsed_days)
-daily_expense_rate = current_month_expenses / elapsed_days
-forecast_expenses = current_month_expenses + daily_expense_rate * days_left
-forecast_balance = current_month_income - forecast_expenses
+
+# Do not show a misleading projection when there are no expenses this month.
+forecast_has_data = not current_month_df[
+    current_month_df["type"] == "Expense"
+].empty
+
+if forecast_has_data:
+    daily_expense_rate = current_month_expenses / elapsed_days
+    forecast_expenses = (
+        current_month_expenses + daily_expense_rate * days_left
+    )
+else:
+    daily_expense_rate = 0.0
+    forecast_expenses = 0.0
+
+forecast_budget_buffer = monthly_budget - forecast_expenses
 forecast_budget_overrun = forecast_expenses - monthly_budget
+forecast_balance = current_month_income - forecast_expenses
+
+# Remaining budget spread evenly across the remaining calendar days.
+if monthly_budget > 0 and days_left > 0:
+    safe_daily_allowance = max(0.0, budget_left / days_left)
+else:
+    safe_daily_allowance = 0.0
+
+# Simple, explainable budget-risk label.
+if monthly_budget <= 0:
+    forecast_risk = "Set a monthly budget"
+elif not forecast_has_data:
+    forecast_risk = "Not enough spending data"
+elif forecast_budget_buffer < 0:
+    forecast_risk = "Likely over budget"
+elif forecast_expenses >= monthly_budget * 0.90:
+    forecast_risk = "Budget at risk"
+else:
+    forecast_risk = "On track"
 
 # ---------- Helper functions ----------
 def rupees(value: float) -> str:
@@ -445,28 +501,44 @@ if page == "Overview":
                 "Share": st.column_config.TextColumn("Share of spending", width="small"),
             })
     with right:
-        section_heading("MONTH-END OUTLOOK", "A simple forecast", "Current-month estimate using your average daily spending, regardless of the analysis filter.")
-        st.markdown(
-            f"""
-            <div class="pp-card">
-                <div class="pp-card-label">PROJECTED MONTH-END EXPENSES</div>
-                <div class="pp-card-value">{rupees(forecast_expenses)}</div>
-                <div class="pp-card-note">Based on {rupees(daily_expense_rate)} average spending per day this month.</div>
-                <div style="height:14px"></div>
-                <div class="pp-card-label">PROJECTED BUDGET POSITION</div>
-                <div class="pp-card-value" style="color:{'#B85C50' if forecast_budget_overrun > 0 else '#9B7BFF'}">
-                    {rupees(abs(forecast_budget_overrun))} {'over' if forecast_budget_overrun > 0 else 'under'} budget
-                </div>
-                <div class="pp-card-note">This is a rule-based estimate, not a guarantee.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        section_heading(
+            "MONTH-END OUTLOOK",
+            "A simple forecast",
+            "Current-month estimate based on recorded expenses, regardless of the analysis filter.",
         )
-        st.write("")
-        if forecast_budget_overrun > 0:
-            st.warning("Try reducing flexible spending for the rest of the month.")
+        if not forecast_has_data:
+            st.info("No current-month expenses recorded yet. Add transactions to generate a forecast.")
         else:
-            st.success("Your current pace is within the budget you entered.")
+            budget_position_text = (
+                f"{rupees(abs(forecast_budget_overrun))} over budget"
+                if forecast_budget_overrun > 0
+                else f"{rupees(abs(forecast_budget_overrun))} under budget"
+            )
+            st.markdown(
+                f"""
+                <div class="pp-card">
+                    <div class="pp-card-label">PROJECTED MONTH-END EXPENSES</div>
+                    <div class="pp-card-value">{rupees(forecast_expenses)}</div>
+                    <div class="pp-card-note">Average recorded spending: {rupees(daily_expense_rate)} per elapsed day.</div>
+                    <div style="height:14px"></div>
+                    <div class="pp-card-label">PROJECTED BUDGET POSITION</div>
+                    <div class="pp-card-value" style="color:{'#FF647C' if forecast_budget_overrun > 0 else '#9B7BFF'}">
+                        {budget_position_text}
+                    </div>
+                    <div class="pp-card-note">A rule-based estimate, not a guarantee. It assumes all expenses so far have been recorded.</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.write("")
+            if monthly_budget <= 0:
+                st.info("Set a monthly budget to assess your forecast.")
+            elif forecast_budget_overrun > 0:
+                st.warning("Try reducing flexible spending for the rest of the month.")
+            elif forecast_risk == "Budget at risk":
+                st.warning("Your current pace is close to the budget limit. Monitor the remaining days.")
+            else:
+                st.success("Your current pace is projected to stay within budget.")
 
     # Extra breathing room after the breakdown/outlook, before the next section.
     st.markdown('<div class="pp-divider"></div><div style="height:72px"></div>', unsafe_allow_html=True)
@@ -490,6 +562,114 @@ if page == "Overview":
     for i, (title, body) in enumerate(suggestions[:3]):
         with cards[i]:
             st.markdown(f'<div class="pp-card"><div class="pp-card-label">ACTION {i+1:02d}</div><div style="font-size:1.08rem;font-weight:800;margin:10px 0;color:{THEME["text"]}">{title}</div><div class="pp-card-note" style="font-size:.9rem;line-height:1.6">{body}</div></div>', unsafe_allow_html=True)
+
+    # ---------- User-defined category budgets ----------
+    st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
+    section_heading(
+        "PERSONAL CATEGORY LIMITS",
+        "Set your own spending limits",
+        "Choose a monthly limit for each category. Leave a category at ₹0 if you do not want to track a limit for it.",
+    )
+
+    default_budget_categories = [
+        "Food & groceries", "Eating out", "Transport", "Shopping",
+        "Entertainment", "Housing", "Education", "Bills & utilities",
+        "Healthcare", "Other",
+    ]
+    categories_in_data = sorted(
+        df.loc[df["type"] == "Expense", "category"].dropna().astype(str).unique().tolist()
+    )
+    category_budget_options = list(dict.fromkeys(default_budget_categories + categories_in_data))
+
+    if "category_budgets" not in st.session_state:
+        st.session_state.category_budgets = {}
+
+    with st.form("category_budget_form"):
+        st.markdown("**Monthly category limits (₹)**")
+        budget_columns = st.columns(2, gap="medium")
+        submitted_category_limits = {}
+        for index, category_name in enumerate(category_budget_options):
+            with budget_columns[index % 2]:
+                submitted_category_limits[category_name] = st.number_input(
+                    category_name,
+                    min_value=0,
+                    max_value=10000000,
+                    value=int(st.session_state.category_budgets.get(category_name, 0)),
+                    step=250,
+                    key=f"category_limit_input_{category_name}",
+                    help="Enter 0 to leave this category without a monthly limit.",
+                )
+        save_category_limits = st.form_submit_button("Save category limits", type="primary")
+
+    if save_category_limits:
+        st.session_state.category_budgets = {
+            name: int(limit)
+            for name, limit in submitted_category_limits.items()
+            if int(limit) > 0
+        }
+        st.success("Your category limits have been saved for this app session.")
+
+    # Compare current-month recorded spending against each saved category limit.
+    current_category_spend = (
+        current_month_df[current_month_df["type"] == "Expense"]
+        .groupby("category")["amount"].sum().to_dict()
+    )
+    active_category_limits = st.session_state.category_budgets
+
+    if not active_category_limits:
+        st.info("Set one or more category limits above to unlock personalized category alerts.")
+    else:
+        st.markdown("### Category budget status")
+        for category_name, category_limit in active_category_limits.items():
+            category_spent = float(current_category_spend.get(category_name, 0.0))
+            category_used_pct = (category_spent / category_limit * 100) if category_limit > 0 else 0
+            status_col, amount_col = st.columns([2, 1], gap="medium")
+            with status_col:
+                st.markdown(f"**{category_name}**")
+                st.progress(min(category_used_pct / 100, 1.0))
+                if category_spent > category_limit:
+                    st.error(
+                        f"Over limit by {rupees(category_spent - category_limit)}. "
+                        "Pause or reduce spending in this category."
+                    )
+                elif category_used_pct >= 80:
+                    st.warning(
+                        f"You've used {category_used_pct:.0f}% of this limit. "
+                        f"{rupees(category_limit - category_spent)} left."
+                    )
+                else:
+                    st.success(
+                        f"{category_used_pct:.0f}% used · "
+                        f"{rupees(category_limit - category_spent)} remaining."
+                    )
+            with amount_col:
+                st.metric("SPENT / LIMIT", f"{rupees(category_spent)} / {rupees(category_limit)}")
+
+        # Actionable category insights based on the largest current-month spends.
+        limited_categories = [
+            (name, float(current_category_spend.get(name, 0.0)), float(limit))
+            for name, limit in active_category_limits.items()
+        ]
+        over_limit_categories = [item for item in limited_categories if item[1] > item[2]]
+        near_limit_categories = [
+            item for item in limited_categories
+            if item[2] > 0 and item[2] * 0.8 <= item[1] <= item[2]
+        ]
+        if over_limit_categories:
+            worst_category = max(over_limit_categories, key=lambda item: item[1] - item[2])
+            st.info(
+                f"💡 **Suggested action:** {worst_category[0]} is over its limit by "
+                f"{rupees(worst_category[1] - worst_category[2])}. Consider pausing "
+                "non-essential purchases in this category for the rest of the month."
+            )
+        elif near_limit_categories:
+            closest_category = max(near_limit_categories, key=lambda item: item[1] / item[2])
+            st.info(
+                f"💡 **Suggested action:** {closest_category[0]} is nearing its limit. "
+                "Check upcoming needs before making another purchase."
+            )
+        else:
+            st.info("💡 **Good progress:** Your spending is currently below 80% of every saved category limit.")
 
 elif page == "Spending analysis":
     section_heading("UNDERSTAND THE PATTERN", "Spending analysis", "Explore your expenses by category and over time.")
@@ -661,18 +841,47 @@ elif page == "Monthly comparison":
 
 elif page == "Forecast & goals":
     section_heading("PLAN AHEAD", "Forecast & savings goals", "A lightweight forecast plus a goal tracker to help you plan.")
-    f1, f2, f3 = st.columns(3, gap="medium")
-    with f1:
-        st.metric("SPENT SO FAR", rupees(current_month_expenses), "Current calendar month")
-    with f2:
-        st.metric("PROJECTED MONTH-END SPEND", rupees(forecast_expenses), "Rule-based estimate")
-    with f3:
-        st.metric("PROJECTED BALANCE", rupees(forecast_balance))
+    f1, f2, f3, f4 = st.columns(4, gap="medium")
+    f1.metric("SPENT SO FAR", rupees(current_month_expenses))
+    f2.metric(
+        "PROJECTED MONTH-END",
+        rupees(forecast_expenses) if forecast_has_data else "N/A",
+    )
+    f3.metric("DAYS REMAINING", days_left)
+    f4.metric("SAFE DAILY ALLOWANCE", rupees(safe_daily_allowance))
 
-    if days_left > 0:
-        st.caption(f"Estimate uses {rupees(daily_expense_rate)} average daily spending across {elapsed_days} elapsed day(s), with {days_left} day(s) remaining.")
+    st.markdown("### Monthly budget outlook")
+    if not forecast_has_data:
+        st.info(
+            "No current-month expense records found. "
+            "Add transactions to generate a forecast."
+        )
+    elif monthly_budget <= 0:
+        st.warning("Set a monthly budget to assess budget risk.")
+    elif forecast_risk == "Likely over budget":
+        st.error(
+            f"Your projected spending exceeds your budget by "
+            f"{rupees(abs(forecast_budget_buffer))}."
+        )
+    elif forecast_risk == "Budget at risk":
+        st.warning(
+            f"Your projected budget buffer is "
+            f"{rupees(forecast_budget_buffer)}. Monitor your remaining spending."
+        )
     else:
-        st.caption("Forecast is shown as recorded spending for this selection. Choose Month to date to see a current-month projection.")
+        st.success(
+            f"Your projected spending is within budget. "
+            f"Estimated buffer: {rupees(forecast_budget_buffer)}."
+        )
+
+    st.caption(
+        f"Average daily spending: {rupees(daily_expense_rate)}. "
+        f"Based on {elapsed_days} elapsed calendar days and "
+        f"{days_left} remaining days. This assumes all expenses so far "
+        f"have been entered."
+        if forecast_has_data
+        else "Forecasts appear once current-month expenses are recorded."
+    )
 
     st.markdown('<div class="pp-divider"></div>', unsafe_allow_html=True)
     section_heading("SAVINGS GOAL", "Give your money a target", "Set a goal and track progress. This is a planning aid, not a bank account.")
@@ -748,6 +957,343 @@ elif page == "Forecast & goals":
         st.caption(f"Total planned recurring bills: {rupees(sum(int(b['amount']) for b in st.session_state.bills))} per month.")
     else:
         empty_state("No recurring bills added yet.")
+
+elif page == "AI Financial Coach":
+    section_heading(
+        "YOUR PERSONAL MONEY GUIDE",
+        "AI Financial Coach",
+        "Ask questions about your spending, budget, savings goals and monthly forecast.",
+    )
+
+    # Build a compact context from verified calculations already made by Python.
+    # Never send the underlying transaction table to the AI provider.
+    coach_category_spend = (
+        current_month_df[current_month_df["type"] == "Expense"]
+        .groupby("category")["amount"]
+        .sum()
+        .sort_values(ascending=False)
+    )
+    coach_category_limits = st.session_state.get("category_budgets", {})
+
+    coach_category_status = {}
+    for category_name, category_limit in coach_category_limits.items():
+        category_spent = float(coach_category_spend.get(category_name, 0.0))
+        limit_value = float(category_limit)
+        coach_category_status[category_name] = {
+            "spent": round(category_spent, 2),
+            "monthly_limit": round(limit_value, 2),
+            "used_percent": round(
+                (category_spent / limit_value * 100) if limit_value > 0 else 0.0,
+                1,
+            ),
+            "remaining": round(limit_value - category_spent, 2),
+        }
+
+    coach_context = {
+        "currency": "INR",
+        "analysis_period": {
+            "selection": period_choice,
+            "start_date": str(period_start),
+            "end_date": str(period_end),
+            "income": round(income, 2),
+            "expenses": round(expenses, 2),
+            "net_balance": round(balance, 2),
+            "transaction_count": int(len(month_df)),
+        },
+        "current_month": {
+            "month": str(current_month_period),
+            "income_recorded": round(current_month_income, 2),
+            "expenses_recorded": round(current_month_expenses, 2),
+            "net_balance_recorded": round(current_month_balance, 2),
+            "monthly_budget": round(float(monthly_budget), 2),
+            "budget_left": round(budget_left, 2),
+            "budget_used_percent": round(budget_used_pct, 1),
+        },
+        "forecast": {
+            "has_expense_data": bool(forecast_has_data),
+            "projected_month_end_expenses": (
+                round(forecast_expenses, 2) if forecast_has_data else None
+            ),
+            "projected_month_end_balance": (
+                round(forecast_balance, 2) if forecast_has_data else None
+            ),
+            "average_daily_spending": round(daily_expense_rate, 2),
+            "days_elapsed": int(elapsed_days),
+            "days_remaining": int(days_left),
+            "safe_daily_allowance": round(safe_daily_allowance, 2),
+            "budget_risk": forecast_risk,
+        },
+        "current_month_category_spending": {
+            str(category): round(float(amount), 2)
+            for category, amount in coach_category_spend.items()
+        },
+        "category_monthly_limits": {
+            str(category): round(float(limit), 2)
+            for category, limit in coach_category_limits.items()
+        },
+        "category_budget_status": coach_category_status,
+        "savings_goal": {
+            "name": st.session_state.get("goal_name"),
+            "target": st.session_state.get("goal_target"),
+            "saved": st.session_state.get("goal_saved"),
+        },
+        "planned_recurring_bills_total": round(
+            sum(float(bill.get("amount", 0)) for bill in st.session_state.get("bills", [])),
+            2,
+        ),
+    }
+
+    st.markdown("### Ask PocketPilot")
+    st.markdown("**Not sure what to ask? Try one of these:**")
+
+    if "ai_chat_history" not in st.session_state:
+        st.session_state.ai_chat_history = []
+
+    # Build relevant suggestions from the user's current financial summary.
+    suggestion_questions = [
+        "Where am I spending the most?",
+        "How can I reduce my spending this month?",
+        "Am I on track with my monthly budget?",
+        "How much can I safely spend per day?",
+    ]
+    if coach_category_spend.empty:
+        suggestion_questions[0] = "How do I add transactions to PocketPilot?"
+    elif len(coach_category_spend) > 1:
+        top_spending_category = str(coach_category_spend.index[0])
+        suggestion_questions[1] = f"How can I reduce my spending on {top_spending_category}?"
+    if coach_category_limits:
+        suggestion_questions[2] = "Which of my categories are over budget?"
+    if st.session_state.get("goal_target"):
+        suggestion_questions[3] = "Am I on track to reach my savings goal?"
+
+    suggestion_cols = st.columns(2)
+    for index, suggested_question in enumerate(suggestion_questions):
+        with suggestion_cols[index % 2]:
+            if st.button(suggested_question, key=f"ai_suggestion_{index}", use_container_width=True):
+                st.session_state.pending_ai_question = suggested_question
+                st.rerun()
+
+    chat_controls = st.columns([1, 5])
+    with chat_controls[0]:
+        if st.button("Clear chat", key="clear_ai_chat"):
+            st.session_state.ai_chat_history = []
+            st.rerun()
+
+    for chat_message in st.session_state.ai_chat_history:
+        with st.chat_message(chat_message["role"]):
+            st.markdown(chat_message["content"])
+
+    prompt = st.session_state.pop("pending_ai_question", None)
+    typed_prompt = st.chat_input(
+        "Ask a question about your finances...",
+        max_chars=1000,
+        key="pocketpilot_ai_question",
+    )
+    if typed_prompt:
+        prompt = typed_prompt
+
+    if prompt:
+        previous_messages = st.session_state.ai_chat_history[-8:]
+        conversation_text = ""
+        if previous_messages:
+            conversation_text = "Recent conversation (for continuity):\\n" + "\n".join(
+                f"{'User' if item['role'] == 'user' else 'PocketPilot'}: {item['content']}"
+                for item in previous_messages
+            ) + "\n\n"
+
+        st.session_state.ai_chat_history.append(
+            {"role": "user", "content": prompt.strip()}
+        )
+        with st.chat_message("user"):
+            st.markdown(prompt.strip())
+
+        with st.chat_message("assistant"):
+            with st.spinner("PocketPilot is thinking..."):
+                try:
+                    if not configured_providers():
+                        raise AIEngineError("AI provider unavailable")
+                    result = ask_financial_coach(
+                        question=conversation_text + "Current question: " + prompt.strip(),
+                        financial_context=coach_context,
+                    )
+                    assistant_answer = result["answer"]
+                except (AIEngineError, ValueError):
+                    # Context-aware local fallback. Keep answers specific to the question
+                    # rather than repeating the same top-category recommendation.
+                    category_totals = coach_context.get("current_month_category_spending", {})
+                    ranked = sorted(category_totals.items(), key=lambda item: item[1], reverse=True)
+                    total_spend = sum(category_totals.values())
+                    question_lower = prompt.strip().lower()
+                    top_category, top_amount = ranked[0] if ranked else ("", 0)
+                    selected_category = next(
+                        (name for name in category_totals if name.lower() in question_lower),
+                        None,
+                    )
+
+                    if any(term in question_lower for term in ("10%", "10 percent", "reduce expenses by", "cut expenses by", "if i reduce")):
+                        reduction_match = __import__("re").search(r"(\\d+(?:\\.\\d+)?)\\s*%?", question_lower)
+                        reduction_pct = float(reduction_match.group(1)) if reduction_match else 10.0
+                        reduction_pct = min(max(reduction_pct, 0), 100)
+                        saving = total_spend * reduction_pct / 100
+                        assistant_answer = (
+                            f"If you reduce your recorded category spending by **{reduction_pct:g}%**, "
+                            f"you would save approximately **₹{saving:,.0f}** over the selected period. "
+                            f"Your spending would fall from **₹{total_spend:,.0f}** to about "
+                            f"**₹{total_spend - saving:,.0f}**. This is an estimate based on the transactions currently loaded."
+                        ) if total_spend else "I need recorded expenses for this period before I can calculate a savings scenario."
+
+                    elif any(term in question_lower for term in ("enough money", "money left", "left this month", "month end", "end of the month")):
+                        projected_balance = coach_context.get("forecast", {}).get("projected_month_end_balance")
+                        projected_expenses = coach_context.get("forecast", {}).get("projected_month_end_expenses")
+                        if projected_balance is not None:
+                            outlook = "positive" if projected_balance >= 0 else "negative"
+                            assistant_answer = (
+                                f"Based on your current spending pace, your projected month-end balance is "
+                                f"**₹{projected_balance:,.0f}** ({outlook}). Estimated month-end expenses are "
+                                f"**₹{projected_expenses:,.0f}**. Treat this as a forecast, not a guarantee."
+                            )
+                        else:
+                            assistant_answer = "I don't have enough current-month expense data to estimate your month-end balance yet."
+
+                    elif any(term in question_lower for term in ("compare", "compared", "since", "last month", "previous month", "changed")):
+                        assistant_answer = (
+                            f"For the selected analysis period, recorded income is **₹{income:,.0f}**, "
+                            f"expenses are **₹{expenses:,.0f}**, and the net is **₹{balance:,.0f}**. "
+                            "Choose a different month or comparison period in the sidebar to compare periods."
+                        )
+
+                    elif any(term in question_lower for term in ("over budget", "within budget", "budget", "category limit", "limits")):
+                        if coach_category_status:
+                            over = [
+                                (name, info) for name, info in coach_category_status.items()
+                                if info["spent"] > info["monthly_limit"]
+                            ]
+                            if over:
+                                assistant_answer = "These tracked categories are over their limits: " + "; ".join(
+                                    f"**{name}** by **₹{info['spent'] - info['monthly_limit']:,.0f}**"
+                                    for name, info in over
+                                ) + "."
+                            else:
+                                assistant_answer = "Your tracked categories are currently within their set limits. Keep checking them during the month so small overspending doesn't build up."
+                        else:
+                            assistant_answer = (
+                                f"You have recorded **₹{expenses:,.0f}** in expenses against a monthly budget "
+                                f"of **₹{monthly_budget:,.0f}**. That leaves **₹{budget_left:,.0f}** "
+                                f"({budget_used_pct:.1f}% of the budget used)."
+                            )
+
+                    elif any(term in question_lower for term in ("daily", "per day", "safely spend", "daily allowance")):
+                        assistant_answer = (
+                            f"Your calculated safe daily allowance is **₹{safe_daily_allowance:,.0f}** "
+                            f"for the remaining **{days_left} days** of this month, based on the budget and spending recorded so far. "
+                            "Keep essential bills in mind before treating the full amount as flexible."
+                        )
+
+                    elif any(term in question_lower for term in ("most", "highest", "largest", "where am i spending", "top category")):
+                        if ranked:
+                            share = top_amount / total_spend * 100 if total_spend else 0
+                            runner_up = ranked[1] if len(ranked) > 1 else None
+                            extra = (
+                                f" The next largest category is **{runner_up[0]}** at **₹{runner_up[1]:,.0f}**."
+                                if runner_up else ""
+                            )
+                            assistant_answer = (
+                                f"Your highest spending category is **{top_category}** at **₹{top_amount:,.0f}**, "
+                                f"which is **{share:.1f}%** of your recorded category spending.{extra}"
+                            )
+                        else:
+                            assistant_answer = "I need expense transactions to identify your highest-spending category."
+
+                    elif any(term in question_lower for term in ("reduce", "save", "cut", "spending less", "spend less")):
+                        focus_category = selected_category or top_category
+                        focus_amount = category_totals.get(focus_category, 0) if focus_category else 0
+                        if focus_category:
+                            possible_saving = focus_amount * 0.10
+                            assistant_answer = (
+                                f"To lower **{focus_category}** spending (currently **₹{focus_amount:,.0f}**), "
+                                f"try a 10% reduction first—that would free up about **₹{possible_saving:,.0f}**. "
+                                "Choose one practical change: set a weekly cap, compare prices before buying, "
+                                "and postpone non-urgent purchases for 24 hours."
+                            )
+                        else:
+                            assistant_answer = "Add a few expense transactions first, and I can identify a realistic area to reduce."
+
+                    elif any(term in question_lower for term in ("goal", "savings target", "on track to reach")):
+                        goal = coach_context.get("savings_goal", {})
+                        target, saved = goal.get("target"), goal.get("saved")
+                        if target is not None and saved is not None:
+                            remaining = max(float(target) - float(saved), 0)
+                            assistant_answer = (
+                                f"Your **{goal.get('name') or 'savings'}** goal is **₹{float(target):,.0f}** "
+                                f"and you've saved **₹{float(saved):,.0f}**. You have **₹{remaining:,.0f}** left to reach it."
+                            )
+                        else:
+                            assistant_answer = "You haven't set a savings goal yet. Add a target and current saved amount in Forecast & goals, then ask me again."
+
+                    elif any(term in question_lower for term in ("three habits", "3 habits", "habits i should", "habits should i", "habits to change", "habits can i change")):
+                        habits = []
+                        if ranked:
+                            habits.append(
+                                f"**1. Plan for your biggest category ({top_category}).** "
+                                f"You recorded ₹{top_amount:,.0f} there; set a weekly limit and review it every Sunday."
+                            )
+                        eating_out = next((v for k, v in category_totals.items() if k.lower() in ("eating out", "restaurants", "food delivery")), 0)
+                        shopping = next((v for k, v in category_totals.items() if k.lower() in ("shopping", "personal shopping")), 0)
+                        transport = next((v for k, v in category_totals.items() if k.lower() in ("transport", "travel")), 0)
+                        if eating_out:
+                            habits.append(
+                                f"**2. Reduce impulse food purchases.** You recorded ₹{eating_out:,.0f} on eating out; decide in advance how many café or delivery meals fit your weekly budget."
+                            )
+                        elif shopping:
+                            habits.append(
+                                f"**2. Add a 24-hour pause before non-essential shopping.** Your shopping total is ₹{shopping:,.0f}; wishlist items first and buy only what still feels necessary the next day."
+                            )
+                        elif transport:
+                            habits.append(
+                                f"**2. Group short trips where practical.** You recorded ₹{transport:,.0f} on transport; plan errands together and compare public transport with individual rides."
+                            )
+                        else:
+                            habits.append(
+                                "**2. Record small purchases on the same day.** This makes cash and low-value spending easier to spot before it adds up."
+                            )
+                        habits.append(
+                            "**3. Do a 10-minute weekly money check-in.** Review category totals, upcoming bills and your remaining budget; choose one adjustment for the next week."
+                        )
+                        assistant_answer = "Based on the transactions currently loaded, here are three habits worth trying:\n\n" + "\n\n".join(habits)
+
+                    elif any(term in question_lower for term in ("summarize my financial health", "summarise my financial health", "financial health", "overall financial", "financial summary")):
+                        savings_rate = (balance / income * 100) if income > 0 else None
+                        expense_ratio = (expenses / income * 100) if income > 0 else None
+                        health_bits = [
+                            f"You recorded **₹{income:,.0f} income** and **₹{expenses:,.0f} expenses**, leaving a net balance of **₹{balance:,.0f}** for the selected period."
+                        ]
+                        if savings_rate is not None:
+                            health_bits.append(
+                                f"Your net balance is **{savings_rate:.1f}% of recorded income** (expenses use {expense_ratio:.1f}% of income)."
+                            )
+                        if ranked:
+                            health_bits.append(
+                                f"Your largest expense category is **{top_category}** at **₹{top_amount:,.0f}**."
+                            )
+                        if balance < 0:
+                            health_bits.append("**Priority:** expenses exceed income, so pause non-essential spending and review recurring costs first.")
+                        elif savings_rate is not None and savings_rate >= 20:
+                            health_bits.append("**Good sign:** you have a positive surplus. Protect part of it by moving your planned savings aside when income arrives.")
+                        else:
+                            health_bits.append("**Next step:** keep a small buffer for unexpected costs and set a realistic savings target before discretionary spending.")
+                        assistant_answer = "## Your financial health snapshot\n\n" + "\n\n".join(health_bits) + "\n\nThis is based only on the transactions in the selected period, not a full assessment of your finances."
+
+                    else:
+                        assistant_answer = (
+                            f"Here's your current snapshot: income **₹{income:,.0f}**, expenses "
+                            f"**₹{expenses:,.0f}**, and net balance **₹{balance:,.0f}** for the selected period. "
+                            "Try asking about your highest category, budget limits, daily allowance, a savings goal, or a percentage-reduction scenario."
+                        )
+
+                st.markdown(assistant_answer)
+                st.session_state.ai_chat_history.append(
+                    {"role": "assistant", "content": assistant_answer}
+                )
 
 elif page == "Transactions":
     section_heading("YOUR MONEY LOG", "Transaction history", "Search, filter, and inspect the transactions in your selected analysis period.")
